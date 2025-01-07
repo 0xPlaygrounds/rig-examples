@@ -1,0 +1,15 @@
+[package]
+name = "firstproject"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.95"
+chrono = "0.4.39"
+dotenv = "0.15.0"
+reqwest = { version = "0.12.12", features = ["json"] }
+rig-core = "0.6.0"
+serde = "1.0.217"
+serde_json = "1.0.134"
+thiserror = "2.0.9"
+tokio = { version = "1.42.0", features = ["full"] }
