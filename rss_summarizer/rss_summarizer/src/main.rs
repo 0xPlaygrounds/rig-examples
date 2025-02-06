@@ -1,13 +1,12 @@
-use rig::providers::openai::Client;
-use schemars::{JsonSchema, schema_for};
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
-use reqwest;
-use rss::Channel;
-use tokio::time::{self, Duration};
-use std::error::Error;
 use regex::Regex;
-use std::iter::FromIterator;
+use reqwest;
+use rig::providers::openai;
+use rss::Channel;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use tokio::time::{self, Duration};
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 struct SummarizedRssItem {
@@ -60,15 +59,17 @@ fn sanitize_string(input: &str) -> String {
 
 async fn summarize_rss_feed(channel: Channel) -> Result<RssSummary, Box<dyn Error>> {
     // Initialize the OpenAI client
-    let openai_client = Client::from_env();
+    let openai_client = openai::Client::from_env();
 
     // Create the extractor
     let extractor = openai_client
-        .extractor::<RssSummary>("gpt-4")
-        .preamble("You are an AI assistant specialized in summarizing RSS feeds. \
+        .extractor::<RssSummary>(openai::GPT_4)
+        .preamble(
+            "You are an AI assistant specialized in summarizing RSS feeds. \
                    Your task is to analyze the RSS items, extract the most relevant information, \
                    and provide concise summaries. For each item, provide a brief summary and a \
-                   relevance score from 0.0 to 1.0. Also, provide an overall summary of the feed.")
+                   relevance score from 0.0 to 1.0. Also, provide an overall summary of the feed.",
+        )
         .build();
 
     // Convert RSS items to a format suitable for summarization
@@ -86,7 +87,9 @@ async fn summarize_rss_feed(channel: Channel) -> Result<RssSummary, Box<dyn Erro
         let description = item.description().unwrap_or("").to_string();
 
         // Remove CDATA sections and HTML tags
-        let clean_description = re_html.replace_all(&re_cdata.replace_all(&description, ""), "").to_string();
+        let clean_description = re_html
+            .replace_all(&re_cdata.replace_all(&description, ""), "")
+            .to_string();
         let sanitized_description = sanitize_string(&clean_description);
 
         formatted_rss.push_str(&format!(
@@ -114,16 +117,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     loop {
         interval.tick().await;
-        
+
         match fetch_rss_feed(rss_url).await {
-            Ok(channel) => {
-                match summarize_rss_feed(channel).await {
-                    Ok(rss_summary) => {
-                        pretty_print_summary(&rss_summary);
-                    }
-                    Err(e) => eprintln!("Error summarizing RSS feed: {}", e),
+            Ok(channel) => match summarize_rss_feed(channel).await {
+                Ok(rss_summary) => {
+                    pretty_print_summary(&rss_summary);
                 }
-            }
+                Err(e) => eprintln!("Error summarizing RSS feed: {}", e),
+            },
             Err(e) => eprintln!("Error fetching RSS feed: {}", e),
         }
     }
