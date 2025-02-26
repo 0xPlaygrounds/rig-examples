@@ -3,18 +3,18 @@
 mod rig_agent;
 
 use anyhow::Result;
+use dotenv::dotenv;
+use rig_agent::RigAgent;
 use serenity::async_trait;
 use serenity::model::application::command::Command;
-use serenity::model::application::interaction::{Interaction, InteractionResponseType};
-use serenity::model::gateway::Ready;
-use serenity::model::channel::Message;
-use serenity::prelude::*;
 use serenity::model::application::command::CommandOptionType;
+use serenity::model::application::interaction::{Interaction, InteractionResponseType};
+use serenity::model::channel::Message;
+use serenity::model::gateway::Ready;
+use serenity::prelude::*;
 use std::env;
 use std::sync::Arc;
-use tracing::{error, info, debug};
-use rig_agent::RigAgent;
-use dotenv::dotenv;
+use tracing::{debug, error, info};
 
 // Define a key for storing the bot's user ID in the TypeMap
 struct BotUserId;
@@ -30,12 +30,37 @@ struct Handler {
 #[async_trait]
 impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        debug!("Received an interaction");
+        debug!("\n\n======> Received an interaction");
         if let Interaction::ApplicationCommand(command) = interaction {
-            debug!("Received command: {}", command.data.name);
-            let content = match command.data.name.as_str() {
-                "hello" => "Hello! I'm your helpful Rust and Rig-powered assistant. How can I assist you today?".to_string(),
+            debug!("\n\n======> Received command: {}", command.data.name);
+            
+            match command.data.name.as_str() {
+                "hello" => {
+                    let content = "Hello! I'm your helpful Rust and Rig-powered assistant. How can I assist you today?".to_string();
+                    
+                    if let Err(why) = command
+                        .create_interaction_response(&ctx.http, |response| {
+                            response
+                                .kind(InteractionResponseType::ChannelMessageWithSource)
+                                .interaction_response_data(|message| message.content(content))
+                        })
+                        .await
+                    {
+                        error!("Cannot respond to slash command: {}", why);
+                    }
+                },
                 "ask" => {
+                    // Step 1: Acknowledge quickly
+                    if let Err(e) = command
+                        .create_interaction_response(&ctx.http, |response| {
+                            response.kind(InteractionResponseType::DeferredChannelMessageWithSource)
+                        })
+                        .await
+                    {
+                        error!("Failed to create deferred response: {:?}", e);
+                        return;
+                    }
+    
                     let query = command
                         .data
                         .options
@@ -43,38 +68,55 @@ impl EventHandler for Handler {
                         .and_then(|opt| opt.value.as_ref())
                         .and_then(|v| v.as_str())
                         .unwrap_or("What would you like to ask?");
-                    debug!("Query: {}", query);
-                    match self.rig_agent.process_message(query).await {
-                        Ok(response) => response,
+                    
+                    debug!("\n\n======> Query: {}", query);
+                    
+                    let response = match self.rig_agent.process_string(query).await {
+                        Ok(response) => {
+                            if response.len() > 1900 {
+                                format!("Response truncated due to Discord limits:\n{}", &response[..1897])
+                            } else {
+                                response
+                            }
+                        },
                         Err(e) => {
                             error!("Error processing request: {:?}", e);
                             format!("Error processing request: {:?}", e)
                         }
+                    };
+                    
+                    // Step 3: Edit the original response
+                    if let Err(e) = command
+                        .edit_original_interaction_response(&ctx.http, |message| {
+                            message.content(response)
+                        })
+                        .await
+                    {
+                        error!("Failed to edit interaction response: {:?}", e);
+                    }
+                },
+                _ => {
+                    if let Err(why) = command
+                        .create_interaction_response(&ctx.http, |response| {
+                            response
+                                .kind(InteractionResponseType::ChannelMessageWithSource)
+                                .interaction_response_data(|message| 
+                                    message.content("Not implemented :("))
+                        })
+                        .await
+                    {
+                        error!("Cannot respond to slash command: {}", why);
                     }
                 }
-                _ => "Not implemented :(".to_string(),
-            };
-
-            debug!("Sending response: {}", content);
-
-            if let Err(why) = command
-                .create_interaction_response(&ctx.http, |response| {
-                    response
-                        .kind(InteractionResponseType::ChannelMessageWithSource)
-                        .interaction_response_data(|message| message.content(content))
-                })
-                .await
-            {
-                error!("Cannot respond to slash command: {}", why);
-            } else {
-                debug!("Response sent successfully");
             }
+            
+            debug!("\n\n======> Response sent successfully");
         }
     }
-
+    
     async fn message(&self, ctx: Context, msg: Message) {
         if msg.mentions_me(&ctx.http).await.unwrap_or(false) {
-            debug!("Bot mentioned in message: {}", msg.content);
+            debug!("\n\n=====> Bot mentioned in message: {}", msg.content);
 
             let bot_id = {
                 let data = ctx.data.read().await;
@@ -85,25 +127,55 @@ impl EventHandler for Handler {
                 let mention = format!("<@{}>", bot_id);
                 let content = msg.content.replace(&mention, "").trim().to_string();
 
-                debug!("Processed content after removing mention: {}", content);
+                debug!(
+                    "\n\n=====> Processed content after removing mention: {}",
+                    content
+                );
 
-                match self.rig_agent.process_message(&content).await {
+                match self.rig_agent.process_message(&ctx, &msg).await {
                     Ok(response) => {
-                        if let Err(why) = msg.channel_id.say(&ctx.http, response).await {
-                            error!("Error sending message: {:?}", why);
-                        }
+                        println!("Response sent successfully.");
+                        println!("{}", response);
                     }
                     Err(e) => {
-                        error!("Error processing message: {:?}", e);
-                        if let Err(why) = msg
-                            .channel_id
-                            .say(&ctx.http, format!("Error processing message: {:?}", e))
-                            .await
-                        {
-                            error!("Error sending error message: {:?}", why);
+                        println!("Error processing request: {:?}", e);
+                        if let Err(why) = msg.channel_id.say(&ctx.http, format!("Error processing request: {:?}", e)).await {
+                            println!("Error sending error message: {:?}", why);
                         }
                     }
                 }
+
+                match self.rig_agent.process_message(&ctx, &msg).await {
+                    Ok(response) => {
+                        println!("Response sent successfully.");
+                        println!("{}", response);
+                    }
+                    Err(e) => {
+                        println!("Error processing request: {:?}", e);
+                        if let Err(why) = msg.channel_id.say(&ctx.http, format!("Error processing request: {:?}", e)).await {
+                            println!("Error sending error message: {:?}", why);
+                        }
+                    }
+                }
+
+
+                // match self.rig_agent.process_message(&content).await {
+                //     Ok(response) => {
+                //         if let Err(why) = msg.channel_id.say(&ctx.http, response).await {
+                //             error!("Error sending message: {:?}", why);
+                //         }
+                //     }
+                //     Err(e) => {
+                //         error!("Error processing message: {:?}", e);
+                //         if let Err(why) = msg
+                //             .channel_id
+                //             .say(&ctx.http, format!("Error processing message: {:?}", e))
+                //             .await
+                //         {
+                //             error!("Error sending error message: {:?}", why);
+                //         }
+                //     }
+                // }
             } else {
                 error!("Bot user ID not found in TypeMap");
             }
@@ -121,9 +193,7 @@ impl EventHandler for Handler {
         let commands = Command::set_global_application_commands(&ctx.http, |commands| {
             commands
                 .create_application_command(|command| {
-                    command
-                        .name("hello")
-                        .description("Say hello to the bot")
+                    command.name("hello").description("Say hello to the bot")
                 })
                 .create_application_command(|command| {
                     command
